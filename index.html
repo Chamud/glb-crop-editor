@@ -112,7 +112,7 @@
     <div class="row">
       <select id="exportFormat" title="Export format">
         <option value="glb">GLB — materials + textures</option>
-        <option value="obj">OBJ — geometry + UVs</option>
+        <option value="obj">OBJ (.zip) — OBJ + MTL + textures</option>
         <option value="stl">STL (binary) — geometry only</option>
         <option value="ply">PLY (binary) — geometry + vertex colors</option>
         <option value="usdz">USDZ — Apple AR, textures embedded</option>
@@ -274,6 +274,7 @@ import { OBJExporter } from 'three/addons/exporters/OBJExporter.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { PLYExporter } from 'three/addons/exporters/PLYExporter.js';
 import { USDZExporter } from 'three/addons/exporters/USDZExporter.js';
+import { zipSync, strToU8 } from 'three/addons/libs/fflate.module.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 window.__booted = true;
@@ -1213,6 +1214,70 @@ function download(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
 
+async function textureToPNGBytes(tex) {
+  const img = tex.image;
+  if (!img || !(img.width > 0)) return null;
+  const c = document.createElement('canvas');
+  c.width = img.width;
+  c.height = img.height;
+  const x = c.getContext('2d');
+  // glTF UVs are top-origin, OBJ expects bottom-origin: flip the image once
+  x.translate(0, c.height);
+  x.scale(1, -1);
+  x.drawImage(img, 0, 0);
+  const blob = await new Promise(r => c.toBlob(r, 'image/png'));
+  return blob ? new Uint8Array(await blob.arrayBuffer()) : null;
+}
+
+async function exportOBJZip(out) {
+  const base = modelName + '_cropped';
+  const mats = [];
+  out.children.forEach((mesh, i) => {
+    mesh.name = 'mesh_' + i;
+    let idx = mats.indexOf(mesh.material);
+    if (idx === -1) { idx = mats.length; mats.push(mesh.material); }
+    mesh.userData.matIndex = idx;
+  });
+
+  let obj = 'mtllib ' + base + '.mtl\n' + new OBJExporter().parse(out);
+  for (const mesh of out.children) {
+    obj = obj.replace('o ' + mesh.name + '\n',
+      'o ' + mesh.name + '\nusemtl mat_' + mesh.userData.matIndex + '\n');
+  }
+
+  const files = {};
+  const texNames = new Map();
+  let mtl = '';
+  for (let i = 0; i < mats.length; i++) {
+    const m = mats[i];
+    const col = m.color ? m.color.clone().convertLinearToSRGB() : new THREE.Color(1, 1, 1);
+    mtl += 'newmtl mat_' + i + '\n';
+    mtl += 'Kd ' + col.r.toFixed(4) + ' ' + col.g.toFixed(4) + ' ' + col.b.toFixed(4) + '\n';
+    mtl += 'illum 1\n';
+    if (m.transparent && m.opacity < 1) mtl += 'd ' + m.opacity.toFixed(4) + '\n';
+    if (m.map) {
+      let texName = texNames.get(m.map);
+      if (texName === undefined) {
+        texName = null;
+        try {
+          const bytes = await textureToPNGBytes(m.map);
+          if (bytes) {
+            texName = 'texture_' + texNames.size + '.png';
+            files[texName] = [bytes, { level: 0 }]; // PNG is already compressed
+          }
+        } catch (e) { console.warn('could not extract texture', e); }
+        texNames.set(m.map, texName);
+      }
+      if (texName) mtl += 'map_Kd ' + texName + '\n';
+    }
+    mtl += '\n';
+  }
+
+  files[base + '.obj'] = strToU8(obj);
+  files[base + '.mtl'] = strToU8(mtl);
+  return new Blob([zipSync(files)], { type: 'application/zip' });
+}
+
 async function exportModel() {
   if (!entries.length) return;
   const format = document.getElementById('exportFormat').value;
@@ -1221,13 +1286,14 @@ async function exportModel() {
     const out = buildExportScene();
     if (!out) throw new Error('nothing left to export — all triangles are deleted');
 
-    let blob;
+    let blob, ext = format;
     if (format === 'glb') {
       const glb = await new Promise((res, rej) =>
         exporter.parse(out, res, rej, { binary: true }));
       blob = new Blob([glb], { type: 'model/gltf-binary' });
     } else if (format === 'obj') {
-      blob = new Blob([new OBJExporter().parse(out)], { type: 'text/plain' });
+      blob = await exportOBJZip(out);
+      ext = 'obj.zip';
     } else if (format === 'stl') {
       const data = new STLExporter().parse(out, { binary: true });
       blob = new Blob([data], { type: 'application/octet-stream' });
@@ -1242,7 +1308,7 @@ async function exportModel() {
     } else {
       throw new Error('unknown format: ' + format);
     }
-    download(blob, modelName + '_cropped.' + format);
+    download(blob, modelName + '_cropped.' + ext);
   } catch (err) {
     alert('Export failed: ' + (err.message || err));
     console.error(err);

@@ -37,7 +37,7 @@ No install, no build step, no server. Open `index.html` in a browser, drop in a 
 - Original materials, textures, UVs and vertex colors preserved
 - Export the cropped result as:
   - **GLB** — full materials + embedded textures (recommended)
-  - **OBJ** — geometry + UVs (no textures)
+  - **OBJ** — downloads a `.zip` with `.obj` + `.mtl` + extracted texture PNGs, so it opens fully textured in Blender/MeshLab/etc. Vertex colors (if present) are written too.
   - **STL** (binary) — geometry only, ready for 3D printing
   - **PLY** (binary) — geometry + vertex colors
   - **USDZ** — Apple AR Quick Look, textures embedded
