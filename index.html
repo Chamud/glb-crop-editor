@@ -45,7 +45,7 @@
   button:disabled { opacity: 0.4; cursor: default; }
   button.danger { border-color: #7a2b2b; }
   button.danger:hover { background: #5a2020; }
-  input[type=number] {
+  input[type=number], select {
     width: 100%; background: #0e1116; color: var(--text); border: 1px solid var(--panel-border);
     border-radius: 4px; padding: 5px 6px; font-size: 12px;
   }
@@ -107,8 +107,18 @@
   <div class="section">
     <div class="row">
       <button id="btnOpen">Open GLB…</button>
-      <button id="btnExport" disabled>Export GLB</button>
+      <button id="btnExport" disabled>Export</button>
     </div>
+    <div class="row">
+      <select id="exportFormat" title="Export format">
+        <option value="glb">GLB — materials + textures</option>
+        <option value="obj">OBJ — geometry + UVs</option>
+        <option value="stl">STL (binary) — geometry only</option>
+        <option value="ply">PLY (binary) — geometry + vertex colors</option>
+        <option value="usdz">USDZ — Apple AR, textures embedded</option>
+      </select>
+    </div>
+    <div class="hint">FBX can't be written in a browser — export GLB, then convert in Blender (Import glTF → Export FBX).</div>
     <input id="fileInput" type="file" accept=".glb,.gltf" style="display:none">
   </div>
 
@@ -260,6 +270,10 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+import { OBJExporter } from 'three/addons/exporters/OBJExporter.js';
+import { STLExporter } from 'three/addons/exporters/STLExporter.js';
+import { PLYExporter } from 'three/addons/exporters/PLYExporter.js';
+import { USDZExporter } from 'three/addons/exporters/USDZExporter.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 window.__booted = true;
@@ -1036,7 +1050,7 @@ document.getElementById('btnOpen').addEventListener('click', () =>
 document.getElementById('fileInput').addEventListener('change', (e) => {
   if (e.target.files[0]) loadFile(e.target.files[0]);
 });
-document.getElementById('btnExport').addEventListener('click', exportGLB);
+document.getElementById('btnExport').addEventListener('click', exportModel);
 
 /* keyboard */
 window.addEventListener('keydown', (e) => {
@@ -1157,48 +1171,78 @@ function setModel(root, name) {
   updateUI();
 }
 
-async function exportGLB() {
+function buildExportScene() {
+  const out = new THREE.Scene();
+  for (const e of entries) {
+    let n = 0;
+    for (let i = 0; i < e.triCount; i++) if (e.alive[i]) n++;
+    if (!n) continue;
+
+    const g = new THREE.BufferGeometry();
+    const take = (base) => {
+      if (!base) return null;
+      const sz = base.itemSize;
+      const arr = new Float32Array(n * 3 * sz);
+      let j = 0;
+      for (let i = 0; i < e.triCount; i++) {
+        if (!e.alive[i]) continue;
+        arr.set(base.array.subarray(i * 3 * sz, (i + 1) * 3 * sz), j * 3 * sz);
+        j++;
+      }
+      return new THREE.BufferAttribute(arr, sz);
+    };
+    g.setAttribute('position', take(e.basePos));
+    const nor = take(e.baseNormal); if (nor) g.setAttribute('normal', nor);
+    const uv = take(e.baseUV); if (uv) g.setAttribute('uv', uv);
+    const col = take(e.baseColor); if (col) g.setAttribute('color', col);
+
+    const mesh = new THREE.Mesh(g, e.origMaterial);
+    e.mesh.updateWorldMatrix(true, false);
+    mesh.applyMatrix4(e.mesh.matrixWorld);
+    out.add(mesh);
+  }
+  out.updateMatrixWorld(true);
+  return out.children.length ? out : null;
+}
+
+function download(blob, filename) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+async function exportModel() {
   if (!entries.length) return;
+  const format = document.getElementById('exportFormat').value;
   spinner.style.display = 'block';
   try {
-    const out = new THREE.Scene();
-    for (const e of entries) {
-      let n = 0;
-      for (let i = 0; i < e.triCount; i++) if (e.alive[i]) n++;
-      if (!n) continue;
+    const out = buildExportScene();
+    if (!out) throw new Error('nothing left to export — all triangles are deleted');
 
-      const g = new THREE.BufferGeometry();
-      const take = (base, comps) => {
-        if (!base) return null;
-        const sz = base.itemSize;
-        const arr = new Float32Array(n * 3 * sz);
-        let j = 0;
-        for (let i = 0; i < e.triCount; i++) {
-          if (!e.alive[i]) continue;
-          arr.set(base.array.subarray(i * 3 * sz, (i + 1) * 3 * sz), j * 3 * sz);
-          j++;
-        }
-        return new THREE.BufferAttribute(arr, sz);
-      };
-      g.setAttribute('position', take(e.basePos));
-      const nor = take(e.baseNormal); if (nor) g.setAttribute('normal', nor);
-      const uv = take(e.baseUV); if (uv) g.setAttribute('uv', uv);
-      const col = take(e.baseColor); if (col) g.setAttribute('color', col);
-
-      const mesh = new THREE.Mesh(g, e.origMaterial);
-      e.mesh.updateWorldMatrix(true, false);
-      mesh.applyMatrix4(e.mesh.matrixWorld);
-      out.add(mesh);
+    let blob;
+    if (format === 'glb') {
+      const glb = await new Promise((res, rej) =>
+        exporter.parse(out, res, rej, { binary: true }));
+      blob = new Blob([glb], { type: 'model/gltf-binary' });
+    } else if (format === 'obj') {
+      blob = new Blob([new OBJExporter().parse(out)], { type: 'text/plain' });
+    } else if (format === 'stl') {
+      const data = new STLExporter().parse(out, { binary: true });
+      blob = new Blob([data], { type: 'application/octet-stream' });
+    } else if (format === 'ply') {
+      const data = await new Promise((res) =>
+        new PLYExporter().parse(out, res, { binary: true }));
+      blob = new Blob([data], { type: 'application/octet-stream' });
+    } else if (format === 'usdz') {
+      const ex = new USDZExporter();
+      const data = ex.parseAsync ? await ex.parseAsync(out) : await ex.parse(out);
+      blob = new Blob([data], { type: 'model/vnd.usdz+zip' });
+    } else {
+      throw new Error('unknown format: ' + format);
     }
-
-    const glb = await new Promise((res, rej) =>
-      exporter.parse(out, res, rej, { binary: true }));
-    const blob = new Blob([glb], { type: 'model/gltf-binary' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = modelName + '_cropped.glb';
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    download(blob, modelName + '_cropped.' + format);
   } catch (err) {
     alert('Export failed: ' + (err.message || err));
     console.error(err);

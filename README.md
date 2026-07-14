@@ -35,7 +35,13 @@ No install, no build step, no server. Open `index.html` in a browser, drop in a 
 - Drag & drop or file-picker loading of `.glb` / `.gltf`
 - Draco- and Meshopt-compressed files supported
 - Original materials, textures, UVs and vertex colors preserved
-- One-click export to `<name>_cropped.glb`
+- Export the cropped result as:
+  - **GLB** — full materials + embedded textures (recommended)
+  - **OBJ** — geometry + UVs (no textures)
+  - **STL** (binary) — geometry only, ready for 3D printing
+  - **PLY** (binary) — geometry + vertex colors
+  - **USDZ** — Apple AR Quick Look, textures embedded
+- **FBX?** FBX is a closed Autodesk format with no browser-side writer. Export GLB, then convert in Blender: *File → Import → glTF 2.0*, then *File → Export → FBX* (textures survive the round trip).
 
 ## Usage
 
