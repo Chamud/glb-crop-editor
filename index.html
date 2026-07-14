@@ -1,0 +1,1228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GLB Crop Editor</title>
+<style>
+  :root {
+    --bg: #0d0f13;
+    --panel: #16191fee;
+    --panel-border: #2a2f3a;
+    --text: #d7dbe2;
+    --muted: #8a919e;
+    --accent: #ff6a1e;
+    --accent-dim: #b34a15;
+    --btn: #232833;
+    --btn-hover: #2e3542;
+    --btn-active: #ff6a1e;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
+    font-family: "Segoe UI", system-ui, sans-serif; color: var(--text); font-size: 13px; }
+  #view { position: absolute; inset: 0; }
+  #view canvas { display: block; }
+  #overlay { position: absolute; inset: 0; pointer-events: none; }
+
+  #panel {
+    position: absolute; top: 12px; left: 12px; width: 264px;
+    background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px;
+    padding: 12px; backdrop-filter: blur(6px);
+    max-height: calc(100% - 60px); overflow-y: auto;
+  }
+  #panel h1 { font-size: 14px; color: var(--accent); margin-bottom: 10px; font-weight: 600; }
+  .section { margin-bottom: 12px; }
+  .section .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--muted); margin-bottom: 5px; }
+  .row { display: flex; gap: 5px; margin-bottom: 5px; flex-wrap: wrap; }
+  button {
+    background: var(--btn); color: var(--text); border: 1px solid var(--panel-border);
+    border-radius: 5px; padding: 6px 9px; cursor: pointer; font-size: 12px; flex: 1;
+    white-space: nowrap;
+  }
+  button:hover { background: var(--btn-hover); }
+  button.active { background: var(--btn-active); border-color: var(--btn-active); color: #fff; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button.danger { border-color: #7a2b2b; }
+  button.danger:hover { background: #5a2020; }
+  input[type=number] {
+    width: 100%; background: #0e1116; color: var(--text); border: 1px solid var(--panel-border);
+    border-radius: 4px; padding: 5px 6px; font-size: 12px;
+  }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .num3 { display: flex; gap: 5px; }
+  .num3 > div { flex: 1; }
+  .num3 .tag { font-size: 10px; color: var(--muted); text-align: center; margin-top: 2px; }
+  .hint { font-size: 11px; color: var(--muted); line-height: 1.5; }
+  kbd { background: #23272f; border: 1px solid #333a45; border-radius: 3px; padding: 0 4px;
+    font-size: 10px; font-family: inherit; }
+
+  #statusbar {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 30px;
+    background: var(--panel); border-top: 1px solid var(--panel-border);
+    display: flex; align-items: center; gap: 22px; padding: 0 14px; font-size: 12px;
+  }
+  #statusbar b { color: var(--accent); font-weight: 600; }
+  #toolhint { color: var(--muted); margin-left: auto; }
+
+  #drophint {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 10px; pointer-events: none; color: var(--muted);
+  }
+  #drophint .big { font-size: 22px; color: var(--text); }
+  #booterr {
+    position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+    background: var(--bg); color: var(--text); text-align: center; line-height: 1.8; padding: 20px;
+  }
+  .dragover-glow { outline: 3px dashed var(--accent); outline-offset: -3px; }
+  #gizmo { position: absolute; top: 12px; right: 12px; width: 110px; height: 110px; }
+  #spinner { display: none; position: absolute; top: 12px; right: 12px; color: var(--accent);
+    background: var(--panel); border: 1px solid var(--panel-border); border-radius: 6px; padding: 8px 12px; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+<script>
+  window.__booted = false;
+  setTimeout(function () {
+    if (!window.__booted) {
+      document.getElementById('booterr').style.display = 'flex';
+    }
+  }, 5000);
+</script>
+</head>
+<body>
+<div id="view"></div>
+<canvas id="overlay"></canvas>
+<canvas id="gizmo" width="110" height="110"></canvas>
+
+<div id="panel">
+  <h1>GLB Crop Editor</h1>
+
+  <div class="section">
+    <div class="row">
+      <button id="btnOpen">Open GLB…</button>
+      <button id="btnExport" disabled>Export GLB</button>
+    </div>
+    <input id="fileInput" type="file" accept=".glb,.gltf" style="display:none">
+  </div>
+
+  <div class="section">
+    <div class="label">View</div>
+    <div class="row">
+      <button id="btnProj">Switch to Orthographic</button>
+    </div>
+    <div class="hint">Click an axis ball on the gizmo (top-right) to snap to an orthographic front / side / top view.</div>
+  </div>
+
+  <div class="section" id="xformSection" style="display:none">
+    <div class="label">Model transform</div>
+    <div class="num3">
+      <div><input id="posX" type="number" step="0.01"><div class="tag">Pos X</div></div>
+      <div><input id="posY" type="number" step="0.01"><div class="tag">Pos Y</div></div>
+      <div><input id="posZ" type="number" step="0.01"><div class="tag">Pos Z</div></div>
+    </div>
+    <div style="height:5px"></div>
+    <div class="num3">
+      <div><input id="rotX" type="number" step="5"><div class="tag">Rot X°</div></div>
+      <div><input id="rotY" type="number" step="5"><div class="tag">Rot Y°</div></div>
+      <div><input id="rotZ" type="number" step="5"><div class="tag">Rot Z°</div></div>
+    </div>
+    <div style="height:5px"></div>
+    <div class="num3">
+      <div><input id="scl" type="number" step="0.1" min="0.0001"><div class="tag">Scale</div></div>
+      <div style="flex:2"></div>
+    </div>
+    <div style="height:6px"></div>
+    <div class="row">
+      <button id="btnRotX90">X +90°</button>
+      <button id="btnRotY90">Y +90°</button>
+      <button id="btnRotZ90">Z +90°</button>
+    </div>
+    <div class="row">
+      <button id="btnCenter">Center at origin</button>
+    </div>
+    <div class="row">
+      <button id="btnGround">Set on ground (Y=0)</button>
+    </div>
+    <div class="hint">The transform is baked into the exported GLB.</div>
+  </div>
+
+  <div class="section">
+    <div class="label">Tool</div>
+    <div class="row">
+      <button class="toolbtn active" data-tool="navigate" title="1">Move</button>
+      <button class="toolbtn" data-tool="rect" title="2">Rect</button>
+      <button class="toolbtn" data-tool="lasso" title="3">Lasso</button>
+    </div>
+    <div class="row">
+      <button class="toolbtn" data-tool="sphere" title="4">Sphere</button>
+      <button class="toolbtn" data-tool="box" title="5">Box</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="label">Selection mode</div>
+    <div class="row">
+      <button class="modebtn active" data-mode="set">Set</button>
+      <button class="modebtn" data-mode="add">Add</button>
+      <button class="modebtn" data-mode="remove">Remove</button>
+    </div>
+    <div class="hint">Rect/Lasso: hold <kbd>Shift</kbd> = add, <kbd>Ctrl</kbd> = remove.</div>
+  </div>
+
+  <div class="section" id="sphereParams" style="display:none">
+    <div class="label">Sphere radius</div>
+    <input id="radiusSlider" type="range" min="0.001" max="1" step="0.001">
+    <input id="radiusNum" type="number" step="0.01" min="0.0001">
+  </div>
+
+  <div class="section" id="boxParams" style="display:none">
+    <div class="label">Box size (world units)</div>
+    <div class="num3">
+      <div><input id="boxX" type="number" step="0.01" min="0.0001"><div class="tag">Len X</div></div>
+      <div><input id="boxY" type="number" step="0.01" min="0.0001"><div class="tag">Len Y</div></div>
+      <div><input id="boxZ" type="number" step="0.01" min="0.0001"><div class="tag">Len Z</div></div>
+    </div>
+  </div>
+
+  <div class="section" id="volumeApply" style="display:none">
+    <div class="row">
+      <button id="btnVolApply">Apply volume selection</button>
+    </div>
+    <div class="hint">Click / drag in the scene to place the volume, then Apply (uses the mode above). Yellow = preview.</div>
+  </div>
+
+  <div class="section">
+    <div class="label">Selection</div>
+    <div class="row">
+      <button id="btnInvert">Invert</button>
+      <button id="btnAll">All</button>
+      <button id="btnNone">None</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="label">Edit</div>
+    <div class="row">
+      <button id="btnDelete" class="danger" disabled>Delete selected</button>
+    </div>
+    <div class="row">
+      <button id="btnCrop" disabled>Crop (keep selected only)</button>
+    </div>
+    <div class="row">
+      <button id="btnUndo" disabled>Undo</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="hint">
+      <kbd>1</kbd>–<kbd>5</kbd> tools · <kbd>I</kbd> invert · <kbd>A</kbd> all ·
+      <kbd>Esc</kbd> deselect · <kbd>Del</kbd> delete · <kbd>K</kbd> crop ·
+      <kbd>Ctrl+Z</kbd> undo · <kbd>O</kbd> ortho/persp<br>
+      In a selection tool: <b>right-drag</b> orbits, wheel zooms.<br>
+      Rect &amp; Lasso select through the whole model (front and back faces).
+    </div>
+  </div>
+</div>
+
+<div id="statusbar">
+  <span>Triangles: <b id="statTris">0</b></span>
+  <span>Selected: <b id="statSel">0</b></span>
+  <span>Deleted: <b id="statDel">0</b></span>
+  <span id="toolhint"></span>
+</div>
+
+<div id="drophint">
+  <div class="big">Drop a .glb file here</div>
+  <div>or use “Open GLB…” in the panel</div>
+</div>
+
+<div id="spinner">Working…</div>
+
+<div id="booterr">
+  <div>
+    <b>Could not load Three.js from the CDN.</b><br>
+    Check your internet connection, or serve this folder over HTTP:<br>
+    <kbd>npx serve "d:\Projects\Quark\Naigai Tech\3Dscan\glb-editor"</kbd><br>
+    then open the printed http://localhost… URL.
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+window.__booted = true;
+
+/* ---------------- renderer / scene ---------------- */
+
+const viewEl = document.getElementById('view');
+const overlay = document.getElementById('overlay');
+const octx = overlay.getContext('2d');
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+viewEl.appendChild(renderer.domElement);
+const el = renderer.domElement;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0d0f13);
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+const persp = new THREE.PerspectiveCamera(60, 1, 0.01, 1000);
+persp.position.set(2.5, 1.8, 2.5);
+const ortho = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.001, 1000);
+let camera = persp;          // active camera
+let projection = 'persp';
+let orthoHalfH = 1;
+
+const controls = new OrbitControls(camera, el);
+controls.enableDamping = true;
+controls.dampingFactor = 0.12;
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0x33404f, 0.9));
+const dir = new THREE.DirectionalLight(0xffffff, 1.4);
+dir.position.set(3, 6, 4);
+scene.add(dir);
+
+const grid = new THREE.GridHelper(10, 20, 0x39404d, 0x21252d);
+scene.add(grid);
+
+function updateOrthoFrustum() {
+  const aspect = viewEl.clientWidth / Math.max(viewEl.clientHeight, 1);
+  ortho.left = -orthoHalfH * aspect;
+  ortho.right = orthoHalfH * aspect;
+  ortho.top = orthoHalfH;
+  ortho.bottom = -orthoHalfH;
+  ortho.updateProjectionMatrix();
+}
+
+function resize() {
+  const w = viewEl.clientWidth, h = viewEl.clientHeight;
+  renderer.setSize(w, h);
+  persp.aspect = w / h;
+  persp.updateProjectionMatrix();
+  updateOrthoFrustum();
+  overlay.width = w;
+  overlay.height = h;
+}
+window.addEventListener('resize', resize);
+resize();
+
+const clock = new THREE.Clock();
+let viewTween = null;
+let gizmoReady = false;
+
+renderer.setAnimationLoop(() => {
+  const delta = clock.getDelta();
+  if (viewTween) {
+    viewTween.t = Math.min(viewTween.t + delta / viewTween.dur, 1);
+    const k = viewTween.t * viewTween.t * (3 - 2 * viewTween.t); // smoothstep
+    const q = new THREE.Quaternion().slerpQuaternions(IDENTITY_Q, viewTween.q, k);
+    const d = viewTween.fromDir.clone().applyQuaternion(q);
+    camera.position.copy(controls.target).add(d.multiplyScalar(viewTween.dist));
+    camera.lookAt(controls.target);
+    if (viewTween.t >= 1) {
+      viewTween = null;
+      controls.enabled = true;
+      controls.update();
+    }
+  } else {
+    controls.update();
+  }
+  renderer.render(scene, camera);
+  if (gizmoReady) renderGizmo();
+});
+
+/* ---------------- loaders ---------------- */
+
+const gltfLoader = new GLTFLoader();
+const draco = new DRACOLoader();
+draco.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.7/');
+gltfLoader.setDRACOLoader(draco);
+// non-blocking: a top-level await here would let the render loop start
+// before the rest of the module is initialized
+import('https://cdn.jsdelivr.net/npm/meshoptimizer@0.21.0/meshopt_decoder.module.js')
+  .then(m => gltfLoader.setMeshoptDecoder(m.MeshoptDecoder))
+  .catch(() => { /* meshopt optional */ });
+
+const exporter = new GLTFExporter();
+
+/* ---------------- state ---------------- */
+
+const COL_SEL = [1.0, 0.42, 0.1];   // orange = selected
+const COL_PREV = [1.0, 0.95, 0.2];  // yellow = volume preview
+
+let entries = [];        // one per mesh primitive
+let modelRoot = null;
+let modelName = 'model';
+let modelSize = 1;       // bbox diagonal, used to scale defaults
+const undoStack = [];
+const UNDO_MAX = 15;
+
+let tool = 'navigate';
+let mode = 'set';
+
+/* ---------------- mesh preparation ---------------- */
+
+function prepareMesh(mesh) {
+  let g = mesh.geometry;
+  g = g.index ? g.toNonIndexed() : g.clone();
+
+  const posAttr = g.getAttribute('position');
+  if (!posAttr) return null;
+  const triCount = Math.floor(posAttr.count / 3);
+  if (triCount === 0) return null;
+
+  const grab = (name) => {
+    const a = g.getAttribute(name);
+    if (!a) return null;
+    // deinterleave / normalize into a plain Float32Array
+    const out = new Float32Array(a.count * a.itemSize);
+    for (let i = 0; i < a.count; i++)
+      for (let c = 0; c < a.itemSize; c++)
+        out[i * a.itemSize + c] = a.getComponent(i, c);
+    return { array: out, itemSize: a.itemSize };
+  };
+
+  const entry = {
+    mesh,
+    triCount,
+    basePos: grab('position'),
+    baseNormal: grab('normal'),
+    baseUV: grab('uv'),
+    baseColor: grab('color'),
+    alive: new Uint8Array(triCount).fill(1),
+    selected: new Uint8Array(triCount),
+    preview: new Uint8Array(triCount),
+    map: null,
+    origMaterial: Array.isArray(mesh.material) ? mesh.material[0] : mesh.material,
+  };
+
+  const dmat = entry.origMaterial.clone();
+  dmat.vertexColors = true;
+  dmat.side = THREE.DoubleSide;
+  dmat.needsUpdate = true;
+  mesh.material = dmat;
+
+  rebuild(entry);
+  return entry;
+}
+
+function rebuild(entry) {
+  let n = 0;
+  for (let i = 0; i < entry.triCount; i++) if (entry.alive[i]) n++;
+
+  const map = new Uint32Array(n);
+  const pos = new Float32Array(n * 9);
+  const nor = entry.baseNormal ? new Float32Array(n * 9) : null;
+  const uvSz = entry.baseUV ? entry.baseUV.itemSize : 0;
+  const uv = entry.baseUV ? new Float32Array(n * 3 * uvSz) : null;
+
+  let j = 0;
+  for (let i = 0; i < entry.triCount; i++) {
+    if (!entry.alive[i]) continue;
+    map[j] = i;
+    pos.set(entry.basePos.array.subarray(i * 9, i * 9 + 9), j * 9);
+    if (nor) nor.set(entry.baseNormal.array.subarray(i * 9, i * 9 + 9), j * 9);
+    if (uv) uv.set(entry.baseUV.array.subarray(i * 3 * uvSz, (i + 1) * 3 * uvSz), j * 3 * uvSz);
+    j++;
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  if (nor) g.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+  if (uv) g.setAttribute('uv', new THREE.BufferAttribute(uv, uvSz));
+  g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(n * 9).fill(1), 3));
+
+  entry.map = map;
+  entry.mesh.geometry.dispose();
+  entry.mesh.geometry = g;
+  updateColors(entry);
+}
+
+function updateColors(entry) {
+  const attr = entry.mesh.geometry.getAttribute('color');
+  const a = attr.array;
+  for (let j = 0; j < entry.map.length; j++) {
+    const i = entry.map[j];
+    let r = 1, g = 1, b = 1;
+    if (entry.preview[i]) { [r, g, b] = COL_PREV; }
+    else if (entry.selected[i]) { [r, g, b] = COL_SEL; }
+    const o = j * 9;
+    a[o] = r; a[o + 1] = g; a[o + 2] = b;
+    a[o + 3] = r; a[o + 4] = g; a[o + 5] = b;
+    a[o + 6] = r; a[o + 7] = g; a[o + 8] = b;
+  }
+  attr.needsUpdate = true;
+}
+
+function forEachTriWorld(entry, cb) {
+  entry.mesh.updateWorldMatrix(true, false);
+  const m = entry.mesh.matrixWorld.elements;
+  const pos = entry.mesh.geometry.getAttribute('position').array;
+  for (let j = 0; j < entry.map.length; j++) {
+    const o = j * 9;
+    const x = (pos[o] + pos[o + 3] + pos[o + 6]) / 3;
+    const y = (pos[o + 1] + pos[o + 4] + pos[o + 7]) / 3;
+    const z = (pos[o + 2] + pos[o + 5] + pos[o + 8]) / 3;
+    cb(entry.map[j],
+      m[0] * x + m[4] * y + m[8] * z + m[12],
+      m[1] * x + m[5] * y + m[9] * z + m[13],
+      m[2] * x + m[6] * y + m[10] * z + m[14]);
+  }
+}
+
+/* ---------------- undo ---------------- */
+
+function pushUndo() {
+  undoStack.push(entries.map(e => ({ alive: e.alive.slice(), selected: e.selected.slice() })));
+  if (undoStack.length > UNDO_MAX) undoStack.shift();
+}
+
+function undo() {
+  const s = undoStack.pop();
+  if (!s) return;
+  s.forEach((st, i) => {
+    const e = entries[i];
+    e.alive.set(st.alive);
+    e.selected.set(st.selected);
+    e.preview.fill(0);
+    rebuild(e);
+  });
+  updateUI();
+}
+
+/* ---------------- selection operations ---------------- */
+
+function applyPerTri(e, i, inside, m) {
+  if (m === 'set') e.selected[i] = inside ? 1 : 0;
+  else if (m === 'add') { if (inside) e.selected[i] = 1; }
+  else { if (inside) e.selected[i] = 0; }
+}
+
+function screenApply(testFn, m) {
+  pushUndo();
+  camera.updateMatrixWorld();
+  const mvp = new THREE.Matrix4();
+  const pv = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+  const W = el.clientWidth, H = el.clientHeight;
+  for (const e of entries) {
+    e.mesh.updateWorldMatrix(true, false);
+    mvp.multiplyMatrices(pv, e.mesh.matrixWorld);
+    const t = mvp.elements;
+    const pos = e.mesh.geometry.getAttribute('position').array;
+    for (let j = 0; j < e.map.length; j++) {
+      const o = j * 9;
+      const cx = (pos[o] + pos[o + 3] + pos[o + 6]) / 3;
+      const cy = (pos[o + 1] + pos[o + 4] + pos[o + 7]) / 3;
+      const cz = (pos[o + 2] + pos[o + 5] + pos[o + 8]) / 3;
+      const w = t[3] * cx + t[7] * cy + t[11] * cz + t[15];
+      let inside = false;
+      if (w > 0) {
+        const sx = ((t[0] * cx + t[4] * cy + t[8] * cz + t[12]) / w + 1) / 2 * W;
+        const sy = (1 - (t[1] * cx + t[5] * cy + t[9] * cz + t[13]) / w) / 2 * H;
+        inside = testFn(sx, sy);
+      }
+      applyPerTri(e, e.map[j], inside, m);
+    }
+    updateColors(e);
+  }
+  updateUI();
+}
+
+function pointInPoly(px, py, pts) {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const xi = pts[i][0], yi = pts[i][1], xj = pts[j][0], yj = pts[j][1];
+    if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi))
+      inside = !inside;
+  }
+  return inside;
+}
+
+function selectAll() { pushUndo(); for (const e of entries) { for (let i = 0; i < e.triCount; i++) if (e.alive[i]) e.selected[i] = 1; updateColors(e); } updateUI(); }
+function selectNone() { pushUndo(); for (const e of entries) { e.selected.fill(0); updateColors(e); } updateUI(); }
+function invertSel() { pushUndo(); for (const e of entries) { for (let i = 0; i < e.triCount; i++) if (e.alive[i]) e.selected[i] = e.selected[i] ? 0 : 1; updateColors(e); } updateUI(); }
+
+function deleteTris(keepSelected) {
+  pushUndo();
+  for (const e of entries) {
+    for (let i = 0; i < e.triCount; i++) {
+      if (!e.alive[i]) continue;
+      if (keepSelected ? !e.selected[i] : e.selected[i]) e.alive[i] = 0;
+    }
+    e.selected.fill(0);
+    e.preview.fill(0);
+    rebuild(e);
+  }
+  updateUI();
+}
+
+/* ---------------- volume tools (sphere / box) ---------------- */
+
+const volMat = new THREE.MeshBasicMaterial({
+  color: 0xffd83a, transparent: true, opacity: 0.16, depthWrite: false, side: THREE.DoubleSide
+});
+const sphereHelper = new THREE.Mesh(new THREE.SphereGeometry(1, 40, 24), volMat);
+const boxHelper = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), volMat);
+boxHelper.add(new THREE.LineSegments(
+  new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)),
+  new THREE.LineBasicMaterial({ color: 0xffd83a })
+));
+sphereHelper.add(new THREE.LineSegments(
+  new THREE.EdgesGeometry(new THREE.SphereGeometry(1, 16, 10)),
+  new THREE.LineBasicMaterial({ color: 0xffd83a, transparent: true, opacity: 0.35 })
+));
+sphereHelper.visible = boxHelper.visible = false;
+sphereHelper.renderOrder = boxHelper.renderOrder = 10;
+scene.add(sphereHelper, boxHelper);
+
+let volPlaced = false;
+let sphereRadius = 0.3;
+let boxSize = new THREE.Vector3(0.5, 0.5, 0.5);
+
+function volumeHelper() { return tool === 'sphere' ? sphereHelper : boxHelper; }
+
+function syncVolumeHelpers() {
+  sphereHelper.scale.setScalar(Math.max(sphereRadius, 1e-6));
+  boxHelper.scale.set(Math.max(boxSize.x, 1e-6), Math.max(boxSize.y, 1e-6), Math.max(boxSize.z, 1e-6));
+  sphereHelper.visible = tool === 'sphere' && volPlaced;
+  boxHelper.visible = tool === 'box' && volPlaced;
+}
+
+function volumeTest() {
+  const c = volumeHelper().position;
+  if (tool === 'sphere') {
+    const r2 = sphereRadius * sphereRadius;
+    return (x, y, z) => {
+      const dx = x - c.x, dy = y - c.y, dz = z - c.z;
+      return dx * dx + dy * dy + dz * dz <= r2;
+    };
+  }
+  const hx = boxSize.x / 2, hy = boxSize.y / 2, hz = boxSize.z / 2;
+  return (x, y, z) =>
+    Math.abs(x - c.x) <= hx && Math.abs(y - c.y) <= hy && Math.abs(z - c.z) <= hz;
+}
+
+let previewPending = false;
+function schedulePreview() {
+  if (previewPending) return;
+  previewPending = true;
+  requestAnimationFrame(() => { previewPending = false; updatePreview(); });
+}
+
+function updatePreview() {
+  const active = (tool === 'sphere' || tool === 'box') && volPlaced;
+  const test = active ? volumeTest() : null;
+  for (const e of entries) {
+    e.preview.fill(0);
+    if (test) forEachTriWorld(e, (i, x, y, z) => { if (test(x, y, z)) e.preview[i] = 1; });
+    updateColors(e);
+  }
+}
+
+function applyVolume() {
+  if (!volPlaced || !entries.length) return;
+  pushUndo();
+  const test = volumeTest();
+  for (const e of entries) {
+    forEachTriWorld(e, (i, x, y, z) => applyPerTri(e, i, test(x, y, z), mode));
+    updateColors(e);
+  }
+  updateUI();
+}
+
+/* ---------------- axis gizmo + ortho views ---------------- */
+
+const IDENTITY_Q = new THREE.Quaternion();
+
+const gizmoCanvas = document.getElementById('gizmo');
+const gizmoRenderer = new THREE.WebGLRenderer({ canvas: gizmoCanvas, alpha: true, antialias: true });
+gizmoRenderer.setPixelRatio(window.devicePixelRatio);
+gizmoRenderer.setSize(110, 110, false);
+const gizmoScene = new THREE.Scene();
+const gizmoCam = new THREE.OrthographicCamera(-1.9, 1.9, 1.9, -1.9, 0.1, 20);
+
+function handleTexture(color, letter) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const x = c.getContext('2d');
+  x.beginPath();
+  x.arc(32, 32, 27, 0, Math.PI * 2);
+  if (letter) {
+    x.fillStyle = color;
+    x.fill();
+    x.fillStyle = '#fff';
+    x.font = 'bold 30px sans-serif';
+    x.textAlign = 'center';
+    x.textBaseline = 'middle';
+    x.fillText(letter, 32, 34);
+  } else {
+    x.globalAlpha = 0.3;
+    x.fillStyle = color;
+    x.fill();
+    x.globalAlpha = 1;
+    x.lineWidth = 6;
+    x.strokeStyle = color;
+    x.stroke();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+const AXES = [
+  { dir: [1, 0, 0], color: '#e5484d', letter: 'X' },
+  { dir: [-1, 0, 0], color: '#e5484d' },
+  { dir: [0, 1, 0], color: '#46a758', letter: 'Y' },
+  { dir: [0, -1, 0], color: '#46a758' },
+  { dir: [0, 0, 1], color: '#3e63dd', letter: 'Z' },
+  { dir: [0, 0, -1], color: '#3e63dd' },
+];
+const gizmoHandles = [];
+for (const a of AXES) {
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: handleTexture(a.color, a.letter), toneMapped: false, depthTest: false
+  }));
+  sp.position.fromArray(a.dir).multiplyScalar(1.25);
+  sp.scale.setScalar(0.62);
+  sp.userData.dir = new THREE.Vector3().fromArray(a.dir);
+  gizmoScene.add(sp);
+  gizmoHandles.push(sp);
+  if (a.letter) {
+    const lg = new THREE.BufferGeometry().setFromPoints(
+      [new THREE.Vector3(), sp.position.clone().multiplyScalar(0.72)]);
+    gizmoScene.add(new THREE.Line(lg, new THREE.LineBasicMaterial({ color: a.color })));
+  }
+}
+
+function renderGizmo() {
+  const d = camera.position.clone().sub(controls.target);
+  if (d.lengthSq() < 1e-12) d.set(0, 0, 1);
+  gizmoCam.position.copy(d.normalize().multiplyScalar(8));
+  gizmoCam.up.copy(camera.up);
+  gizmoCam.lookAt(0, 0, 0);
+  gizmoRenderer.render(gizmoScene, gizmoCam);
+}
+
+gizmoReady = true;
+
+const gizmoRay = new THREE.Raycaster();
+function pickHandle(ev) {
+  const r = gizmoCanvas.getBoundingClientRect();
+  const nd = new THREE.Vector2(
+    ((ev.clientX - r.left) / r.width) * 2 - 1,
+    -((ev.clientY - r.top) / r.height) * 2 + 1);
+  gizmoRay.setFromCamera(nd, gizmoCam);
+  const hits = gizmoRay.intersectObjects(gizmoHandles);
+  return hits.length ? hits[0].object : null;
+}
+gizmoCanvas.addEventListener('pointermove', (ev) => {
+  const h = pickHandle(ev);
+  gizmoHandles.forEach(s => s.scale.setScalar(s === h ? 0.76 : 0.62));
+  gizmoCanvas.style.cursor = h ? 'pointer' : 'default';
+});
+gizmoCanvas.addEventListener('pointerleave', () =>
+  gizmoHandles.forEach(s => s.scale.setScalar(0.62)));
+gizmoCanvas.addEventListener('click', (ev) => {
+  const h = pickHandle(ev);
+  if (h) snapView(h.userData.dir);
+});
+
+function snapView(dir) {
+  setProjection('ortho');
+  const fromDir = camera.position.clone().sub(controls.target).normalize();
+  const dist = camera.position.distanceTo(controls.target);
+  viewTween = {
+    t: 0, dur: 0.4, fromDir, dist,
+    q: new THREE.Quaternion().setFromUnitVectors(fromDir, dir.clone()),
+  };
+  controls.enabled = false;
+}
+
+const btnProj = document.getElementById('btnProj');
+function setProjection(type) {
+  if (type === projection) return;
+  const dist = Math.max(camera.position.distanceTo(controls.target), 1e-6);
+  if (type === 'ortho') {
+    orthoHalfH = dist * Math.tan(THREE.MathUtils.degToRad(persp.fov / 2));
+    updateOrthoFrustum();
+    ortho.position.copy(persp.position);
+    ortho.quaternion.copy(persp.quaternion);
+    ortho.zoom = 1;
+    ortho.updateProjectionMatrix();
+    camera = ortho;
+  } else {
+    // keep the apparent zoom level when going back to perspective
+    const d2 = dist / Math.max(ortho.zoom, 1e-6);
+    const dirv = ortho.position.clone().sub(controls.target).normalize();
+    persp.position.copy(controls.target).add(dirv.multiplyScalar(d2));
+    persp.quaternion.copy(ortho.quaternion);
+    camera = persp;
+  }
+  projection = type;
+  controls.object = camera;
+  controls.update();
+  btnProj.textContent = projection === 'ortho' ? 'Switch to Perspective' : 'Switch to Orthographic';
+}
+btnProj.addEventListener('click', () =>
+  setProjection(projection === 'ortho' ? 'persp' : 'ortho'));
+
+/* ---------------- model transform ---------------- */
+
+const xf = {};
+for (const id of ['posX', 'posY', 'posZ', 'rotX', 'rotY', 'rotZ', 'scl'])
+  xf[id] = document.getElementById(id);
+
+function refreshXform() {
+  if (!modelRoot) return;
+  xf.posX.value = +modelRoot.position.x.toFixed(4);
+  xf.posY.value = +modelRoot.position.y.toFixed(4);
+  xf.posZ.value = +modelRoot.position.z.toFixed(4);
+  xf.rotX.value = +THREE.MathUtils.radToDeg(modelRoot.rotation.x).toFixed(2);
+  xf.rotY.value = +THREE.MathUtils.radToDeg(modelRoot.rotation.y).toFixed(2);
+  xf.rotZ.value = +THREE.MathUtils.radToDeg(modelRoot.rotation.z).toFixed(2);
+  xf.scl.value = +modelRoot.scale.x.toFixed(4);
+}
+
+function applyXformInputs() {
+  if (!modelRoot) return;
+  modelRoot.position.set(
+    parseFloat(xf.posX.value) || 0,
+    parseFloat(xf.posY.value) || 0,
+    parseFloat(xf.posZ.value) || 0);
+  modelRoot.rotation.set(
+    THREE.MathUtils.degToRad(parseFloat(xf.rotX.value) || 0),
+    THREE.MathUtils.degToRad(parseFloat(xf.rotY.value) || 0),
+    THREE.MathUtils.degToRad(parseFloat(xf.rotZ.value) || 0));
+  const s = parseFloat(xf.scl.value);
+  if (s > 0) modelRoot.scale.setScalar(s);
+  modelRoot.updateWorldMatrix(true, true);
+  schedulePreview();
+}
+Object.values(xf).forEach(i => i.addEventListener('input', applyXformInputs));
+
+function rot90(ax, ay, az) {
+  if (!modelRoot) return;
+  modelRoot.rotateOnWorldAxis(new THREE.Vector3(ax, ay, az), Math.PI / 2);
+  modelRoot.updateWorldMatrix(true, true);
+  refreshXform();
+  schedulePreview();
+}
+document.getElementById('btnRotX90').addEventListener('click', () => rot90(1, 0, 0));
+document.getElementById('btnRotY90').addEventListener('click', () => rot90(0, 1, 0));
+document.getElementById('btnRotZ90').addEventListener('click', () => rot90(0, 0, 1));
+
+document.getElementById('btnCenter').addEventListener('click', () => {
+  if (!modelRoot) return;
+  modelRoot.updateWorldMatrix(true, true);
+  const bb = new THREE.Box3().setFromObject(modelRoot);
+  const c = bb.getCenter(new THREE.Vector3());
+  modelRoot.position.sub(c);
+  modelRoot.updateWorldMatrix(true, true);
+  grid.position.y = bb.min.y - c.y;
+  controls.target.set(0, 0, 0);
+  controls.update();
+  refreshXform();
+  schedulePreview();
+});
+
+document.getElementById('btnGround').addEventListener('click', () => {
+  if (!modelRoot) return;
+  modelRoot.updateWorldMatrix(true, true);
+  const bb = new THREE.Box3().setFromObject(modelRoot);
+  const c = bb.getCenter(new THREE.Vector3());
+  modelRoot.position.x -= c.x;
+  modelRoot.position.z -= c.z;
+  modelRoot.position.y -= bb.min.y;
+  modelRoot.updateWorldMatrix(true, true);
+  grid.position.y = 0;
+  controls.target.set(0, (bb.max.y - bb.min.y) / 2, 0);
+  controls.update();
+  refreshXform();
+  schedulePreview();
+});
+
+/* ---------------- pointer interaction ---------------- */
+
+const raycaster = new THREE.Raycaster();
+let dragState = null; // {kind:'rect'|'lasso'|'volume', ...}
+
+function ndcFromEvent(ev) {
+  const r = el.getBoundingClientRect();
+  return new THREE.Vector2(
+    ((ev.clientX - r.left) / r.width) * 2 - 1,
+    -((ev.clientY - r.top) / r.height) * 2 + 1
+  );
+}
+function pxFromEvent(ev) {
+  const r = el.getBoundingClientRect();
+  return [ev.clientX - r.left, ev.clientY - r.top];
+}
+
+function placeVolumeAt(ev, plane) {
+  raycaster.setFromCamera(ndcFromEvent(ev), camera);
+  if (plane) {
+    const p = new THREE.Vector3();
+    if (raycaster.ray.intersectPlane(plane, p)) volumeHelper().position.copy(p);
+    return plane;
+  }
+  const meshes = entries.map(e => e.mesh);
+  const hits = raycaster.intersectObjects(meshes, false);
+  const pt = hits.length
+    ? hits[0].point
+    : raycaster.ray.at(camera.position.distanceTo(controls.target), new THREE.Vector3());
+  volumeHelper().position.copy(pt);
+  volPlaced = true;
+  syncVolumeHelpers();
+  const n = new THREE.Vector3();
+  camera.getWorldDirection(n);
+  return new THREE.Plane().setFromNormalAndCoplanarPoint(n, pt);
+}
+
+el.addEventListener('pointerdown', (ev) => {
+  if (ev.button !== 0 || tool === 'navigate' || !entries.length) return;
+  el.setPointerCapture(ev.pointerId);
+  const [x, y] = pxFromEvent(ev);
+  if (tool === 'rect') dragState = { kind: 'rect', x0: x, y0: y, x1: x, y1: y };
+  else if (tool === 'lasso') dragState = { kind: 'lasso', pts: [[x, y]] };
+  else dragState = { kind: 'volume', plane: placeVolumeAt(ev, null) };
+  drawOverlay();
+});
+
+el.addEventListener('pointermove', (ev) => {
+  if (!dragState) return;
+  const [x, y] = pxFromEvent(ev);
+  if (dragState.kind === 'rect') { dragState.x1 = x; dragState.y1 = y; }
+  else if (dragState.kind === 'lasso') {
+    const pts = dragState.pts, last = pts[pts.length - 1];
+    if (Math.hypot(x - last[0], y - last[1]) > 3) pts.push([x, y]);
+  } else {
+    placeVolumeAt(ev, dragState.plane);
+    schedulePreview();
+  }
+  drawOverlay();
+});
+
+el.addEventListener('pointerup', (ev) => {
+  if (!dragState) return;
+  const ds = dragState;
+  dragState = null;
+  octx.clearRect(0, 0, overlay.width, overlay.height);
+
+  const m = ev.shiftKey ? 'add' : (ev.ctrlKey ? 'remove' : mode);
+
+  if (ds.kind === 'rect') {
+    const xa = Math.min(ds.x0, ds.x1), xb = Math.max(ds.x0, ds.x1);
+    const ya = Math.min(ds.y0, ds.y1), yb = Math.max(ds.y0, ds.y1);
+    if (xb - xa > 3 && yb - ya > 3)
+      screenApply((sx, sy) => sx >= xa && sx <= xb && sy >= ya && sy <= yb, m);
+  } else if (ds.kind === 'lasso') {
+    if (ds.pts.length > 2)
+      screenApply((sx, sy) => pointInPoly(sx, sy, ds.pts), m);
+  } else {
+    schedulePreview();
+  }
+});
+
+function drawOverlay() {
+  octx.clearRect(0, 0, overlay.width, overlay.height);
+  if (!dragState) return;
+  octx.strokeStyle = '#ff6a1e';
+  octx.fillStyle = 'rgba(255,106,30,0.08)';
+  octx.lineWidth = 1.5;
+  if (dragState.kind === 'rect') {
+    const { x0, y0, x1, y1 } = dragState;
+    octx.setLineDash([5, 4]);
+    octx.fillRect(x0, y0, x1 - x0, y1 - y0);
+    octx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+    octx.setLineDash([]);
+  } else if (dragState.kind === 'lasso') {
+    const pts = dragState.pts;
+    octx.beginPath();
+    octx.moveTo(pts[0][0], pts[0][1]);
+    for (const p of pts) octx.lineTo(p[0], p[1]);
+    octx.closePath();
+    octx.fill();
+    octx.stroke();
+  }
+}
+
+/* ---------------- tools / modes UI ---------------- */
+
+const toolHints = {
+  navigate: 'Left-drag: orbit · Right-drag: pan · Wheel: zoom',
+  rect: 'Left-drag a rectangle to select · Right-drag: orbit',
+  lasso: 'Left-drag a freehand outline to select · Right-drag: orbit',
+  sphere: 'Click/drag to place the sphere, set radius, then Apply · Right-drag: orbit',
+  box: 'Click/drag to place the box, set size, then Apply · Right-drag: orbit',
+};
+
+function setTool(t) {
+  tool = t;
+  document.querySelectorAll('.toolbtn').forEach(b =>
+    b.classList.toggle('active', b.dataset.tool === t));
+  controls.mouseButtons.LEFT = t === 'navigate' ? THREE.MOUSE.ROTATE : null;
+  controls.mouseButtons.RIGHT = t === 'navigate' ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE;
+  document.getElementById('sphereParams').style.display = t === 'sphere' ? '' : 'none';
+  document.getElementById('boxParams').style.display = t === 'box' ? '' : 'none';
+  document.getElementById('volumeApply').style.display = (t === 'sphere' || t === 'box') ? '' : 'none';
+  document.getElementById('toolhint').textContent = toolHints[t];
+  syncVolumeHelpers();
+  schedulePreview();
+}
+
+function setMode(m) {
+  mode = m;
+  document.querySelectorAll('.modebtn').forEach(b =>
+    b.classList.toggle('active', b.dataset.mode === m));
+}
+
+document.querySelectorAll('.toolbtn').forEach(b =>
+  b.addEventListener('click', () => setTool(b.dataset.tool)));
+document.querySelectorAll('.modebtn').forEach(b =>
+  b.addEventListener('click', () => setMode(b.dataset.mode)));
+
+/* volume param inputs */
+const radiusSlider = document.getElementById('radiusSlider');
+const radiusNum = document.getElementById('radiusNum');
+const boxX = document.getElementById('boxX');
+const boxY = document.getElementById('boxY');
+const boxZ = document.getElementById('boxZ');
+
+function setRadius(r, fromSlider) {
+  sphereRadius = Math.max(r, 1e-5);
+  if (!fromSlider) radiusSlider.value = sphereRadius;
+  radiusNum.value = +sphereRadius.toFixed(4);
+  syncVolumeHelpers();
+  schedulePreview();
+}
+radiusSlider.addEventListener('input', () => setRadius(parseFloat(radiusSlider.value), true));
+radiusNum.addEventListener('input', () => { const v = parseFloat(radiusNum.value); if (v > 0) setRadius(v, false); });
+
+function setBox() {
+  boxSize.set(
+    Math.max(parseFloat(boxX.value) || 0.001, 1e-5),
+    Math.max(parseFloat(boxY.value) || 0.001, 1e-5),
+    Math.max(parseFloat(boxZ.value) || 0.001, 1e-5));
+  syncVolumeHelpers();
+  schedulePreview();
+}
+[boxX, boxY, boxZ].forEach(i => i.addEventListener('input', setBox));
+
+document.getElementById('btnVolApply').addEventListener('click', applyVolume);
+
+/* action buttons */
+document.getElementById('btnInvert').addEventListener('click', invertSel);
+document.getElementById('btnAll').addEventListener('click', selectAll);
+document.getElementById('btnNone').addEventListener('click', selectNone);
+document.getElementById('btnDelete').addEventListener('click', () => deleteTris(false));
+document.getElementById('btnCrop').addEventListener('click', () => deleteTris(true));
+document.getElementById('btnUndo').addEventListener('click', undo);
+document.getElementById('btnOpen').addEventListener('click', () =>
+  document.getElementById('fileInput').click());
+document.getElementById('fileInput').addEventListener('change', (e) => {
+  if (e.target.files[0]) loadFile(e.target.files[0]);
+});
+document.getElementById('btnExport').addEventListener('click', exportGLB);
+
+/* keyboard */
+window.addEventListener('keydown', (e) => {
+  if (/INPUT|TEXTAREA/.test(e.target.tagName)) return;
+  if (e.ctrlKey && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
+  switch (e.key) {
+    case '1': setTool('navigate'); break;
+    case '2': setTool('rect'); break;
+    case '3': setTool('lasso'); break;
+    case '4': setTool('sphere'); break;
+    case '5': setTool('box'); break;
+    case 'i': case 'I': invertSel(); break;
+    case 'a': case 'A': selectAll(); break;
+    case 'Escape': selectNone(); break;
+    case 'Delete': case 'Backspace': deleteTris(false); break;
+    case 'k': case 'K': deleteTris(true); break;
+    case 'o': case 'O': setProjection(projection === 'ortho' ? 'persp' : 'ortho'); break;
+  }
+});
+
+/* ---------------- stats / UI state ---------------- */
+
+function updateUI() {
+  let alive = 0, sel = 0, total = 0;
+  for (const e of entries) {
+    total += e.triCount;
+    for (let i = 0; i < e.triCount; i++) {
+      if (e.alive[i]) { alive++; if (e.selected[i]) sel++; }
+    }
+  }
+  document.getElementById('statTris').textContent = alive.toLocaleString();
+  document.getElementById('statSel').textContent = sel.toLocaleString();
+  document.getElementById('statDel').textContent = (total - alive).toLocaleString();
+  document.getElementById('btnDelete').disabled = sel === 0;
+  document.getElementById('btnCrop').disabled = sel === 0;
+  document.getElementById('btnUndo').disabled = undoStack.length === 0;
+  document.getElementById('btnExport').disabled = entries.length === 0;
+}
+
+/* ---------------- load / export ---------------- */
+
+const spinner = document.getElementById('spinner');
+
+async function loadFile(file) {
+  spinner.style.display = 'block';
+  try {
+    const buf = await file.arrayBuffer();
+    const gltf = await new Promise((res, rej) => gltfLoader.parse(buf, '', res, rej));
+    setModel(gltf.scene, file.name.replace(/\.(glb|gltf)$/i, ''));
+  } catch (err) {
+    alert('Failed to load file: ' + (err.message || err));
+    console.error(err);
+  } finally {
+    spinner.style.display = 'none';
+  }
+}
+
+function setModel(root, name) {
+  if (modelRoot) {
+    scene.remove(modelRoot);
+    modelRoot.traverse(o => { if (o.isMesh) o.geometry.dispose(); });
+  }
+  entries = [];
+  undoStack.length = 0;
+  volPlaced = false;
+  modelName = name || 'model';
+  modelRoot = root;
+  scene.add(root);
+  root.updateWorldMatrix(true, true);
+
+  root.traverse(o => {
+    if (o.isMesh && o.geometry) {
+      const e = prepareMesh(o);
+      if (e) entries.push(e);
+    }
+  });
+
+  if (!entries.length) {
+    alert('No triangle meshes found in this file (point clouds / splats are not supported).');
+  }
+
+  // frame camera + scale defaults to the model
+  const bbox = new THREE.Box3().setFromObject(root);
+  if (!bbox.isEmpty()) {
+    const center = bbox.getCenter(new THREE.Vector3());
+    const size = bbox.getSize(new THREE.Vector3());
+    modelSize = Math.max(size.length(), 1e-3);
+    viewTween = null;
+    controls.enabled = true;
+    setProjection('persp');
+    persp.near = modelSize / 1000;
+    persp.far = modelSize * 100;
+    persp.updateProjectionMatrix();
+    ortho.near = modelSize / 1000;
+    ortho.far = modelSize * 200;
+    ortho.updateProjectionMatrix();
+    controls.target.copy(center);
+    camera.position.copy(center).add(new THREE.Vector3(0.7, 0.5, 0.7).multiplyScalar(modelSize));
+    controls.update();
+
+    radiusSlider.min = modelSize / 500;
+    radiusSlider.max = modelSize / 2;
+    radiusSlider.step = modelSize / 1000;
+    setRadius(modelSize / 12, false);
+    boxSize.set(size.x / 4, size.y / 4, size.z / 4);
+    boxX.value = +boxSize.x.toFixed(3);
+    boxY.value = +boxSize.y.toFixed(3);
+    boxZ.value = +boxSize.z.toFixed(3);
+    syncVolumeHelpers();
+
+    grid.scale.setScalar(modelSize / 5);
+    grid.position.y = bbox.min.y;
+  }
+
+  document.getElementById('drophint').style.display = 'none';
+  document.getElementById('xformSection').style.display = '';
+  refreshXform();
+  updateUI();
+}
+
+async function exportGLB() {
+  if (!entries.length) return;
+  spinner.style.display = 'block';
+  try {
+    const out = new THREE.Scene();
+    for (const e of entries) {
+      let n = 0;
+      for (let i = 0; i < e.triCount; i++) if (e.alive[i]) n++;
+      if (!n) continue;
+
+      const g = new THREE.BufferGeometry();
+      const take = (base, comps) => {
+        if (!base) return null;
+        const sz = base.itemSize;
+        const arr = new Float32Array(n * 3 * sz);
+        let j = 0;
+        for (let i = 0; i < e.triCount; i++) {
+          if (!e.alive[i]) continue;
+          arr.set(base.array.subarray(i * 3 * sz, (i + 1) * 3 * sz), j * 3 * sz);
+          j++;
+        }
+        return new THREE.BufferAttribute(arr, sz);
+      };
+      g.setAttribute('position', take(e.basePos));
+      const nor = take(e.baseNormal); if (nor) g.setAttribute('normal', nor);
+      const uv = take(e.baseUV); if (uv) g.setAttribute('uv', uv);
+      const col = take(e.baseColor); if (col) g.setAttribute('color', col);
+
+      const mesh = new THREE.Mesh(g, e.origMaterial);
+      e.mesh.updateWorldMatrix(true, false);
+      mesh.applyMatrix4(e.mesh.matrixWorld);
+      out.add(mesh);
+    }
+
+    const glb = await new Promise((res, rej) =>
+      exporter.parse(out, res, rej, { binary: true }));
+    const blob = new Blob([glb], { type: 'model/gltf-binary' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = modelName + '_cropped.glb';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  } catch (err) {
+    alert('Export failed: ' + (err.message || err));
+    console.error(err);
+  } finally {
+    spinner.style.display = 'none';
+  }
+}
+
+/* ---------------- drag & drop ---------------- */
+
+window.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  document.body.classList.add('dragover-glow');
+});
+window.addEventListener('dragleave', () => document.body.classList.remove('dragover-glow'));
+window.addEventListener('drop', (e) => {
+  e.preventDefault();
+  document.body.classList.remove('dragover-glow');
+  const f = [...e.dataTransfer.files].find(f => /\.(glb|gltf)$/i.test(f.name));
+  if (f) loadFile(f);
+});
+
+setTool('navigate');
+updateUI();
+</script>
+</body>
+</html>
